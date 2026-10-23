@@ -42,33 +42,58 @@ CLAUDE_MANAGED_ENVIRONMENT_ID=your_environment_id
 PORT=3008
 ```
 
-## How the application was developed
+## How the app was build
 
-The browser collects inputs; the Node host validates requests; the lesson implementation produces observable evidence. The architecture page walks through the real source with numbered steps, prerequisite configuration, source filenames and code excerpts.
+### 1. Handle transient previews before persisted-ID deduplication
 
-### Lesson implementation
+Preview start/delta events go to their own sink. Persisted events then use the per-run ID Set so redelivery does not duplicate successful handling.
 
-[src/router.ts](https://github.com/luiscoco/Udemy-claude-managed-agents-lesson-c08-app/blob/main/src/router.ts)
+Source: [src/router.ts](src/router.ts#L4) · selected statements
 
 ```typescript
-export type RoutedEvent = { type: string; id?: string; evaluated_permission?: string; [key: string]: unknown };
-export type Sink = "preview" | "text" | "action" | "usage" | "lifecycle";
-export function createRouter() {
-  const seen = new Set<string>();
-  return async (event: RoutedEvent, dispatch: (sink: Sink, event: RoutedEvent) => Promise<void> | void) => {
-    if (event.type === "event_start" || event.type === "event_delta") { await dispatch("preview", event); return; }
-    if (event.id && seen.has(event.id)) return;
-    let sink: Sink = "lifecycle";
-    if (event.type === "agent.message") sink = "text";
-    else if (event.type === "agent.custom_tool_use" || event.evaluated_permission === "ask") sink = "action";
-    else if (event.type === "span.model_request_end") sink = "usage";
-    await dispatch(sink, event);
-    if (event.id) seen.add(event.id);
-  };
+const seen = new Set<string>();
+
+// ... other source statements omitted ...
+if (event.type === "event_start" || event.type === "event_delta") {
+  await dispatch("preview", event);
+  return;
 }
+
+// ... other source statements omitted ...
+if (event.id && seen.has(event.id)) return;
 ```
 
-Read the architecture page for the remaining source excerpts and explanations, including input handling and optional provider behavior. The diagram describes this application, rather than implying that an external integration has been implemented.
+### 2. Choose a sink from the event contract
+
+Text, actions and request usage have explicit routes, while other events retain the lifecycle default. An action sink displays a handoff; the sample does not execute or approve the action.
+
+Source: [src/router.ts](src/router.ts#L8) · selected statements
+
+```typescript
+let sink: Sink = "lifecycle";
+
+// ... other source statements omitted ...
+if (event.type === "agent.message") sink = "text";
+else if (
+  event.type === "agent.custom_tool_use" ||
+  event.evaluated_permission === "ask"
+)
+  sink = "action";
+else if (event.type === "span.model_request_end") sink = "usage";
+```
+
+### 3. Mark an ID seen only after dispatch succeeds
+
+Awaiting the sink before adding the ID permits a failed dispatch to be retried. Marking it first could hide an event that never reached its handler.
+
+Source: [src/router.ts](src/router.ts#L12) · selected statements
+
+```typescript
+await dispatch(sink, event);
+
+// ... other source statements omitted ...
+if (event.id) seen.add(event.id);
+```
 
 ## Validation
 
